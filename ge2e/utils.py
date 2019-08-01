@@ -1,6 +1,6 @@
 # wujian@2018
 
-import os 
+import os
 import json
 
 import os.path as op

@@ -152,12 +152,16 @@ class GE2ETrainer(object):
                  logging_period=1000,
                  resume=None,
                  no_impr=6):
+
         if not th.cuda.is_available():
-            raise RuntimeError("CUDA device unavailable...exist")
-        if not isinstance(gpuid, tuple):
-            gpuid = (gpuid, )
-        self.device = th.device("cuda:{}".format(gpuid[0]))
+            gpuid = -1 # (-1, )
+            device = th.device('cpu')
+        else:
+            gpuid = (gpuid,)
+            device = th.device("cuda:{}".format(gpuid[0]))
         self.gpuid = gpuid
+        self.device = device
+
         if checkpoint and not os.path.exists(checkpoint):
             os.makedirs(checkpoint)
         self.checkpoint = checkpoint
@@ -199,7 +203,7 @@ class GE2ETrainer(object):
             min_lr=min_lr,
             verbose=True)
         self.num_params = sum(
-            [param.nelement() for param in nnet.parameters()]) / 10.0**6
+            [param.nelement() for param in nnet.parameters()]) / 10.0 ** 6
 
         # logging
         self.logger.info("Model summary:\n{}".format(nnet))
@@ -251,12 +255,16 @@ class GE2ETrainer(object):
         """
         N, M = egs["N"], egs["M"]
         # NM x D
-        embed = th.nn.parallel.data_parallel(
-            self.nnet, egs["feats"], device_ids=self.gpuid)
+        if self.gpuid == -1:
+            embed = th.nn.parallel.data_parallel(
+                self.nnet, egs["feats"], output_device=-1)
+        else:
+            embed = th.nn.parallel.data_parallel(
+                self.nnet, egs["feats"], device_ids=self.gpuid)
         if embed.size(0) != N * M:
             raise RuntimeError(
                 "Seems something wrong with egs, dimention check failed({:d} vs {:d})"
-                .format(embed.size(0), M * N))
+                    .format(embed.size(0), M * N))
         embed = embed.view(N, M, -1)
         loss = self.ge2e(embed, N, M)
         return loss
@@ -294,50 +302,50 @@ class GE2ETrainer(object):
 
     def run(self, train_loader, dev_loader, num_epochs=50):
         # avoid alloc memory from gpu0
-        with th.cuda.device(self.gpuid[0]):
-            stats = dict()
-            # check if save is OK
-            self.save_checkpoint(best=False)
+        # with th.cuda.device(self.gpuid[0]): # TODO does not work with CPU
+        stats = dict()
+        # check if save is OK
+        self.save_checkpoint(best=False)
+        cv = self.eval(dev_loader)
+        best_loss = cv["loss"]
+        self.logger.info("START FROM EPOCH {:d}, LOSS = {:.4f}".format(
+            self.cur_epoch, best_loss))
+        no_impr = 0
+        # make sure not inf
+        self.scheduler.best = best_loss
+        while self.cur_epoch < num_epochs:
+            self.cur_epoch += 1
+            cur_lr = self.optimizer.param_groups[0]["lr"]
+            stats[
+                "title"] = "Loss(time/N, lr={:.3e}) - Epoch {:2d}:".format(
+                cur_lr, self.cur_epoch)
+            tr = self.train(train_loader)
+            stats["tr"] = "train = {:+.4f}({:.2f}m/{:d})".format(
+                tr["loss"], tr["cost"], tr["batches"])
             cv = self.eval(dev_loader)
-            best_loss = cv["loss"]
-            self.logger.info("START FROM EPOCH {:d}, LOSS = {:.4f}".format(
-                self.cur_epoch, best_loss))
-            no_impr = 0
-            # make sure not inf
-            self.scheduler.best = best_loss
-            while self.cur_epoch < num_epochs:
-                self.cur_epoch += 1
-                cur_lr = self.optimizer.param_groups[0]["lr"]
-                stats[
-                    "title"] = "Loss(time/N, lr={:.3e}) - Epoch {:2d}:".format(
-                        cur_lr, self.cur_epoch)
-                tr = self.train(train_loader)
-                stats["tr"] = "train = {:+.4f}({:.2f}m/{:d})".format(
-                    tr["loss"], tr["cost"], tr["batches"])
-                cv = self.eval(dev_loader)
-                stats["cv"] = "dev = {:+.4f}({:.2f}m/{:d})".format(
-                    cv["loss"], cv["cost"], cv["batches"])
-                stats["scheduler"] = ""
-                if cv["loss"] > best_loss:
-                    no_impr += 1
-                    stats["scheduler"] = "| no impr, best = {:.4f}".format(
-                        self.scheduler.best)
-                else:
-                    best_loss = cv["loss"]
-                    no_impr = 0
-                    self.save_checkpoint(best=True)
+            stats["cv"] = "dev = {:+.4f}({:.2f}m/{:d})".format(
+                cv["loss"], cv["cost"], cv["batches"])
+            stats["scheduler"] = ""
+            if cv["loss"] > best_loss:
+                no_impr += 1
+                stats["scheduler"] = "| no impr, best = {:.4f}".format(
+                    self.scheduler.best)
+            else:
+                best_loss = cv["loss"]
+                no_impr = 0
+                self.save_checkpoint(best=True)
+            self.logger.info(
+                "{title} {tr} | {cv} {scheduler}".format(**stats))
+            # schedule here
+            self.scheduler.step(cv["loss"])
+            # flush scheduler info
+            sys.stdout.flush()
+            # save last checkpoint
+            self.save_checkpoint(best=False)
+            if no_impr == self.no_impr:
                 self.logger.info(
-                    "{title} {tr} | {cv} {scheduler}".format(**stats))
-                # schedule here
-                self.scheduler.step(cv["loss"])
-                # flush scheduler info
-                sys.stdout.flush()
-                # save last checkpoint
-                self.save_checkpoint(best=False)
-                if no_impr == self.no_impr:
-                    self.logger.info(
-                        "Stop training cause no impr for {:d} epochs".format(
-                            no_impr))
-                    break
-            self.logger.info("Training for {:d}/{:d} epoches done!".format(
-                self.cur_epoch, num_epochs))
+                    "Stop training cause no impr for {:d} epochs".format(
+                        no_impr))
+                break
+        self.logger.info("Training for {:d}/{:d} epoches done!".format(
+            self.cur_epoch, num_epochs))

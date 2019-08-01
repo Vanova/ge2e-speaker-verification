@@ -1,5 +1,4 @@
-#!/usr/bin/env bash
-# wujian@2018
+#!/bin/bash
 
 set -eu
 
@@ -13,7 +12,10 @@ echo "$0 $@"
 
 [ $# -ne 2 ] && echo "Script format error: $0 <gpuid> <cpt-id>" && exit 1
 
-./nnet/train_ge2e.py \
+# DEBUG
+./ge2e/train_ge2e.py --M 2 --N 2 --gpu 0 --epochs 1 --train-steps 100 --dev-steps 80 --chunk-size "140,180" --checkpoint ../exp/ge2e/1
+
+./ge2e/train_ge2e.py \
   --M 10 \
   --N 64 \
   --gpu $1 \

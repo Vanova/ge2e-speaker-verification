@@ -1,0 +1,14 @@
+{
+    "optimizer": "sgd",
+    "optimizer_kwargs": {
+        "lr": 0.01,
+        "weight_decay": 1e-05,
+        "momentum": 0.8
+    },
+    "clip_norm": 10,
+    "min_lr": 1e-08,
+    "patience": 2,
+    "factor": 0.5,
+    "no_impr": 6,
+    "logging_period": 200
+}

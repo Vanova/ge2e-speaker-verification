@@ -43,7 +43,7 @@ class SpeakerSampler(object):
             for uttid in samp_utts:
                 utt = self.reader[uttid]
                 pad = C - utt.shape[0]
-                if pad < 0:
+                if pad < 0:  # random chunk of spectrogram
                     start = random.randint(0, -pad)
                     chunks.append(utt[start:start + C])
                 else:

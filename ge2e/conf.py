@@ -18,5 +18,5 @@ trainer_conf = {
     "logging_period": 200  # steps
 }
 
-train_dir = "data/train"
-dev_dir = "data/dev"
+train_dir = "../data/"
+dev_dir = "../data/"
