@@ -2,7 +2,7 @@
 
 lstm_conf = {"num_layers": 3, "hidden_size": 738, "dropout": 0.2}
 
-nnet_conf = {"feature_dim": 40, "embedding_dim": 256, "lstm_conf": lstm_conf}
+nnet_conf = {"feature_dim": 23, "embedding_dim": 128, "lstm_conf": lstm_conf}
 
 # trainer opts
 opt_kwargs = {"lr": 1e-2, "weight_decay": 1e-5, "momentum": 0.8}

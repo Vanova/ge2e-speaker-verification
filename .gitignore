@@ -64,7 +64,7 @@ target/
 *.rdb
 
 # Pycharm
-.idea/
+.idea
 
 # VS Code
 .vscode/
@@ -80,6 +80,7 @@ target/
 
 # data folders and files
 *.h5
+exp
 #/logs/
 #/experiments/
 # exclude data from source control, if too heavy

@@ -38,7 +38,7 @@ class SpeakerSampler(object):
             if len(utt_sets) < M:
                 raise RuntimeError(
                     "Speaker {} can not got enough utterance with M = {:d}".
-                    format(spk, M))
+                        format(spk, M))
             samp_utts = random.sample(utt_sets, M)
             for uttid in samp_utts:
                 utt = self.reader[uttid]

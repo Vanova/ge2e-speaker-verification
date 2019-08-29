@@ -157,10 +157,10 @@ class GE2ETrainer(object):
             gpuid = -1 # (-1, )
             device = th.device('cpu')
         else:
-            gpuid = (gpuid,)
             device = th.device("cuda:{}".format(gpuid[0]))
         self.gpuid = gpuid
         self.device = device
+        print(self.gpuid)
 
         if checkpoint and not os.path.exists(checkpoint):
             os.makedirs(checkpoint)
@@ -306,7 +306,9 @@ class GE2ETrainer(object):
         stats = dict()
         # check if save is OK
         self.save_checkpoint(best=False)
-        cv = self.eval(dev_loader)
+        # TODO initial loss
+        # cv = self.eval(dev_loader)
+        cv = {'loss': 100}
         best_loss = cv["loss"]
         self.logger.info("START FROM EPOCH {:d}, LOSS = {:.4f}".format(
             self.cur_epoch, best_loss))
@@ -314,6 +316,7 @@ class GE2ETrainer(object):
         # make sure not inf
         self.scheduler.best = best_loss
         while self.cur_epoch < num_epochs:
+            print('Epoche: %d' % self.cur_epoch)
             self.cur_epoch += 1
             cur_lr = self.optimizer.param_groups[0]["lr"]
             stats[
