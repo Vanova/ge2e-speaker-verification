@@ -8,8 +8,8 @@ import argparse
 import random
 
 from nnet import Nnet
-from trainer import GE2ETrainer, get_logger
-from dataset import SpeakerLoader
+from trainer import GE2ETrainer, GE2EValidator, get_logger
+from dataset import SpeakerLoader, SRESpeakerDataset
 from utils import dump_json
 from conf import nnet_conf, trainer_conf, train_dir, dev_dir
 
@@ -41,7 +41,29 @@ def run(args):
     dev_loader = SpeakerLoader(
         dev_dir, **loader_conf, num_steps=args.dev_steps)
 
-    trainer.run(train_loader, dev_loader, num_epochs=args.epochs)
+    # trainer.run(train_loader, dev_loader, num_epochs=args.epochs)
+
+    # test_config = {
+    #     'N': 4,  # Number of speakers in batch
+    #     'M': 6,  # Number of utterances per speaker
+    #     'num_workers': 8,  # number of workers for data laoder
+    #     'epochs': 10  # testing speaker epochs
+    # }
+    # TODO debuging
+    test_config = {
+        'N': 64,  # Number of speakers in batch
+        'M': 6,  # Number of utterances per speaker
+        'num_workers': 8,  # number of workers for data laoder
+        'epochs': 10,  # testing speaker epochs
+        'data_path': dev_dir
+    }
+
+    dev_dataset = SRESpeakerDataset(dev_dir, params=test_config)
+
+    valtor = GE2EValidator(cpt_dir=args.checkpoint,
+                           gpuid=int(args.gpu),
+                           params=test_config)
+    valtor.test(dev_dataset)
 
 
 if __name__ == "__main__":

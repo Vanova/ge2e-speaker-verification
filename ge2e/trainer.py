@@ -6,15 +6,16 @@ import os
 import sys
 import time
 import logging
-
+import random
 from collections import defaultdict
-
+from utils import load_json
+from nnet import Nnet
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils import clip_grad_norm_
+from torch.utils.data import DataLoader
 
 
 def get_logger(
@@ -35,6 +36,9 @@ def get_logger(
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
+
+
+logger = get_logger(__name__)
 
 
 def load_obj(obj, device):
@@ -154,7 +158,7 @@ class GE2ETrainer(object):
                  no_impr=6):
 
         if not th.cuda.is_available():
-            gpuid = -1 # (-1, )
+            gpuid = -1  # (-1, )
             device = th.device('cpu')
         else:
             device = th.device("cuda:{}".format(gpuid[0]))
@@ -300,6 +304,9 @@ class GE2ETrainer(object):
                 reporter.add(loss.item())
         return reporter.report(details=True)
 
+    def test_metrics(self):
+        pass
+
     def run(self, train_loader, dev_loader, num_epochs=50):
         # avoid alloc memory from gpu0
         # with th.cuda.device(self.gpuid[0]): # TODO does not work with CPU
@@ -328,6 +335,7 @@ class GE2ETrainer(object):
             cv = self.eval(dev_loader)
             stats["cv"] = "dev = {:+.4f}({:.2f}m/{:d})".format(
                 cv["loss"], cv["cost"], cv["batches"])
+
             stats["scheduler"] = ""
             if cv["loss"] > best_loss:
                 no_impr += 1
@@ -352,3 +360,134 @@ class GE2ETrainer(object):
                 break
         self.logger.info("Training for {:d}/{:d} epoches done!".format(
             self.cur_epoch, num_epochs))
+
+
+class GE2EValidator(object):
+
+    def __init__(self, cpt_dir, gpuid, params):
+        self.params = params
+        # chunk size when inference
+        loader_conf = load_json(cpt_dir, "loader.json")
+        loader_conf['N'] = params['N']
+        loader_conf['M'] = params['M']
+        self.chunk_size = sum(loader_conf["chunk_size"]) // 2
+        logger.info("Using chunk size {:d}".format(self.chunk_size))
+
+        # GPU or CPU
+        self.device = "cuda:{}".format(gpuid) if gpuid >= 0 else "cpu"
+        print('Device: %s' % self.device)
+
+        # load nnet
+        nnet = self._load_nnet(cpt_dir)
+        self.nnet = nnet.to(self.device)
+
+    def _load_nnet(self, cpt_dir):
+        # nnet config
+        nnet_conf = load_json(cpt_dir, "mdl.json")
+        nnet = Nnet(**nnet_conf)
+        cpt_fname = os.path.join(cpt_dir, "best.pt.tar")
+        cpt = th.load(cpt_fname, map_location="cpu")
+        nnet.load_state_dict(cpt["model_state_dict"])
+        logger.info("Load checkpoint from {}, epoch {:d}".format(
+            cpt_fname, cpt["epoch"]))
+        nnet.eval()
+        return nnet
+
+    def test(self, test_dataset):
+        test_loader = DataLoader(test_dataset, batch_size=self.params['N'], shuffle=True,
+                                 num_workers=self.params['num_workers'], drop_last=True)
+        avg_EER = 0
+        for e in range(self.params['epochs']):
+            batch_avg_EER = 0
+            for batch_id, mel_db_batch in enumerate(test_loader):
+                assert self.params['M'] % 2 == 0
+                # batch dim = [N, M, wnd, dim] !!! split by M, i.e. number of utterances
+                enrollment_batch, verification_batch = th.split(mel_db_batch, int(mel_db_batch.size(1) / 2), dim=1)
+
+                enrollment_batch = th.reshape(enrollment_batch, (
+                    self.params['N'] * self.params['M'] // 2, enrollment_batch.size(2), enrollment_batch.size(3)))
+                verification_batch = th.reshape(verification_batch, (
+                    self.params['N'] * self.params['M'] // 2, verification_batch.size(2), verification_batch.size(3)))
+
+                perm = random.sample(range(0, verification_batch.size(0)), verification_batch.size(0))
+                unperm = list(perm)
+                for i, j in enumerate(perm):
+                    unperm[j] = i
+
+                verification_batch = verification_batch[perm]
+                enrollment_embeddings = self.nnet(enrollment_batch)
+                verification_embeddings = self.nnet(verification_batch)
+                verification_embeddings = verification_embeddings[unperm]
+
+                enrollment_embeddings = th.reshape(enrollment_embeddings,
+                                                   (self.params['N'], self.params['M'] // 2, enrollment_embeddings.size(1)))
+                verification_embeddings = th.reshape(verification_embeddings,
+                                                     (self.params['N'], self.params['M'] // 2, verification_embeddings.size(1)))
+
+                enrollment_centroids = self._get_centroids(enrollment_embeddings)
+
+                sim_matrix = self._get_cossim(verification_embeddings, enrollment_centroids)
+
+                # calculating EER
+                diff = 1
+                EER = 0
+                EER_thresh = 0
+                EER_FAR = 0
+                EER_FRR = 0
+
+                for thres in [0.01 * i + 0.5 for i in range(50)]:
+                    sim_matrix_thresh = sim_matrix > thres
+
+                    FAR = (sum([sim_matrix_thresh[i].float().sum() - sim_matrix_thresh[i, :, i].float().sum() for i in
+                                range(int(self.params['N']))])
+                           / (self.params['N'] - 1.0) / (float(self.params['M'] / 2)) / self.params['N'])
+
+                    FRR = (sum(
+                        [self.params['M'] / 2 - sim_matrix_thresh[i, :, i].float().sum() for i in range(int(self.params['N']))])
+                           / (float(self.params['M'] / 2)) / self.params['N'])
+
+                    # Save threshold when FAR = FRR (=EER)
+                    if diff > abs(FAR - FRR):
+                        diff = abs(FAR - FRR)
+                        EER = (FAR + FRR) / 2
+                        EER_thresh = thres
+                        EER_FAR = FAR
+                        EER_FRR = FRR
+                batch_avg_EER += EER
+                print("\nEER : %0.2f (thres:%0.2f, FAR:%0.2f, FRR:%0.2f)" % (EER, EER_thresh, EER_FAR, EER_FRR))
+            avg_EER += batch_avg_EER / (batch_id + 1)
+            print("\n EER {0} epochs: {1:.4f}".format(e, avg_EER / (e + 1)))
+        avg_EER = avg_EER / self.params['epochs']
+        print("\n EER across {0} epochs: {1:.4f}".format(self.params['epochs'], avg_EER))
+
+    def _get_centroids(self, embeddings):
+        centroids = []
+        for speaker in embeddings:
+            centroid = 0
+            for utterance in speaker:
+                centroid = centroid + utterance
+            centroid = centroid / len(speaker)
+            centroids.append(centroid)
+        centroids = th.stack(centroids)
+        return centroids
+
+    def _get_centroid(self, embeddings, speaker_num, utterance_num):
+        centroid = 0
+        for utterance_id, utterance in enumerate(embeddings[speaker_num]):
+            if utterance_id == utterance_num:
+                continue
+            centroid = centroid + utterance
+        centroid = centroid / (len(embeddings[speaker_num]) - 1)
+        return centroid
+
+    def _get_cossim(self, embeddings, centroids):
+        # Calculates cosine similarity matrix. Requires (N, M, feature) input
+        cossim = th.zeros(embeddings.size(0), embeddings.size(1), centroids.size(0))
+        for speaker_num, speaker in enumerate(embeddings):
+            for utterance_num, utterance in enumerate(speaker):
+                for centroid_num, centroid in enumerate(centroids):
+                    if speaker_num == centroid_num:
+                        centroid = self._get_centroid(embeddings, speaker_num, utterance_num)
+                    output = F.cosine_similarity(utterance, centroid, dim=0) + 1e-6
+                    cossim[speaker_num][utterance_num][centroid_num] = output
+        return cossim

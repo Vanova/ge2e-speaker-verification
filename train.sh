@@ -2,10 +2,10 @@
 #set -eu
 
 export PYTHONPATH="$(pwd)/ge2e/:$PYTHONPATH"
-source activate ai
+source activate ai3
 
-train_steps=2500
-dev_steps=800
+train_steps=240 # 3840 // 16 = 240
+dev_steps=64
 chunk_size="140,180"
 cpt_dir=exp/ge2e/$(date "+%d_%b_%Y_%H_%M_%S")
 epochs=50
